@@ -11,6 +11,9 @@ class CacheConfig:
     strategy: Literal['none', 'cacher'] = 'none'
     update_token_ratio: float = 0.25
     cache_interval=2
+    importance_filter_enabled: bool = False
+    importance_keep_ratio: float = 0.5
+    importance_target_layers: str = ""
     
 
         
@@ -43,6 +46,24 @@ class GlobalConfig:
     @classmethod
     def initialize_from_args(cls, args):
         instance = cls.get_instance()
+        if hasattr(args, "cache_strategy"):
+            instance.cache.strategy = args.cache_strategy
+        if hasattr(args, "update_token_ratio"):
+            instance.cache.update_token_ratio = args.update_token_ratio
+        if hasattr(args, "cache_interval"):
+            instance.cache.cache_interval = args.cache_interval
+        if hasattr(args, "importance_filter_enabled"):
+            instance.cache.importance_filter_enabled = args.importance_filter_enabled
+        if hasattr(args, "importance_keep_ratio"):
+            instance.cache.importance_keep_ratio = args.importance_keep_ratio
+        if hasattr(args, "importance_target_layers"):
+            instance.cache.importance_target_layers = args.importance_target_layers
+        if hasattr(args, "token_per_frame"):
+            instance.model.token_per_frame = args.token_per_frame
+        if hasattr(args, "prune_strategy"):
+            instance.model.prune_strategy = args.prune_strategy
+        if hasattr(args, "retrieve_chunk_size"):
+            instance.model.encode_chunk_size = args.retrieve_chunk_size
 
         return instance
     
@@ -52,6 +73,9 @@ class GlobalConfig:
                 'strategy': self.cache.strategy,
                 'update_token_ratio': self.cache.update_token_ratio,
                 'cache_interval': self.cache.cache_interval,
+                'importance_filter_enabled': self.cache.importance_filter_enabled,
+                'importance_keep_ratio': self.cache.importance_keep_ratio,
+                'importance_target_layers': self.cache.importance_target_layers,
             },
             'model': {
                 'token_per_frame': self.model.token_per_frame,

@@ -23,17 +23,50 @@ import torch.distributed as dist
 
 
 def register_cache_by_key_Siglip(vision_tower: nn.Module) -> None:
-    for layer in vision_tower.vision_model.encoder.layers:
+    for layer_idx, layer in enumerate(vision_tower.vision_model.encoder.layers):
         setattr(layer, "_old_forward", layer.forward)
+        setattr(layer, "_stc_layer_idx", layer_idx)
         layer.forward = types.MethodType(forward_with_selective_key_recompute, layer)
         layer.new_attn= types.MethodType(new_siglip_sdpa_attn_forward, layer)
         
        
 def register_cache_by_key_CLIP(vision_tower: nn.Module) -> None:
-    for layer in vision_tower.vision_model.encoder.layers:
+    for layer_idx, layer in enumerate(vision_tower.vision_model.encoder.layers):
         setattr(layer, "_old_forward", layer.forward)
+        setattr(layer, "_stc_layer_idx", layer_idx)
         layer.forward = types.MethodType(forward_with_selective_key_recompute_clip, layer)
         layer.new_attn= types.MethodType(new_siglip_sdpa_attn_forward, layer)
+
+
+def _apply_importance_filter(
+    hidden_states_ln1: torch.Tensor,
+    reference_hidden_states_ln1: torch.Tensor,
+    update_indices: torch.Tensor,
+    importance_keep_ratio: float,
+) -> torch.Tensor:
+    """
+    在已选中的低相似度 token 内，按层间变化（L2）保留更重要的 token。
+    """
+    if reference_hidden_states_ln1 is None:
+        return update_indices
+
+    batch_size, _, embed_dim = hidden_states_ln1.shape
+    num_update = update_indices.shape[1]
+
+    if num_update <= 1:
+        return update_indices
+
+    update_idx_expanded = update_indices.unsqueeze(-1).expand(-1, -1, embed_dim)
+    current_selected = hidden_states_ln1.gather(1, update_idx_expanded)
+
+    reference_hidden_states_ln1 = reference_hidden_states_ln1.unsqueeze(0).expand(batch_size, -1, -1)
+    reference_selected = reference_hidden_states_ln1.gather(1, update_idx_expanded)
+
+    importance_scores = torch.norm(current_selected - reference_selected, p=2, dim=-1)
+    keep_k = max(1, min(num_update, int(num_update * importance_keep_ratio)))
+    topk_local = torch.topk(importance_scores, k=keep_k, dim=1, largest=True).indices
+    final_indices = update_indices.gather(1, topk_local)
+    return final_indices
         
 def forward_with_selective_key_recompute(
     self,
@@ -77,6 +110,7 @@ def forward_with_selective_key_recompute(
         
         self.reference_frame_key = key_states[-1].clone().detach()  # [T, C]
         self.reference_frame_value = value_states[-1].clone().detach()  # [T, C]  # 修复这里！
+        self.reference_hidden_states_ln1 = hidden_states_ln1[-1].clone().detach()  # [T, C]
 
         
         # Reshape for multi-head attention: [F, T, C] -> [F, num_heads, T, head_dim]
@@ -142,8 +176,28 @@ def forward_with_selective_key_recompute(
         
         # 对每一帧，选择相似度最低的token索引
         update_indices = torch.topk(similarity, k=num_update, dim=1, largest=False).indices  # [F, num_update]
-    
-        # ========== 阶段2：只为选定token计算Q和V ==========
+        cfg = get_config().cache
+        current_layer_idx = getattr(self, "_stc_layer_idx", -1)
+        if cfg.importance_target_layers.strip():
+            target_layers = {
+                int(x.strip()) for x in cfg.importance_target_layers.split(",") if x.strip()
+            }
+        else:
+            target_layers = None
+
+        use_importance_filter = cfg.importance_filter_enabled and (
+            target_layers is None or current_layer_idx in target_layers
+        )
+        if use_importance_filter:
+            update_indices = _apply_importance_filter(
+                hidden_states_ln1=hidden_states_ln1,
+                reference_hidden_states_ln1=getattr(self, "reference_hidden_states_ln1", None),
+                update_indices=update_indices,
+                importance_keep_ratio=cfg.importance_keep_ratio,
+            )
+            update_indices = torch.sort(update_indices, dim=1).values
+
+    # ========== 阶段2：只为选定token计算Q和V ==========
         q_proj = self.self_attn.q_proj
         k_proj = self.self_attn.k_proj
         v_proj = self.self_attn.v_proj
@@ -530,6 +584,7 @@ def forward_with_selective_key_recompute_clip(
         
         self.reference_frame_key = key_states[-1].clone().detach()  # [T, C]
         self.reference_frame_value = value_states[-1].clone().detach()  # [T, C]  # 修复这里！
+        self.reference_hidden_states_ln1 = hidden_states_ln1[-1].clone().detach()  # [T, C]
 
         
         # Reshape for multi-head attention: [F, T, C] -> [F, num_heads, T, head_dim]
@@ -595,6 +650,26 @@ def forward_with_selective_key_recompute_clip(
         
         # 对每一帧，选择相似度最低的token索引
         update_indices = torch.topk(similarity, k=num_update, dim=1, largest=False).indices  # [F, num_update]
+        cfg = get_config().cache
+        current_layer_idx = getattr(self, "_stc_layer_idx", -1)
+        if cfg.importance_target_layers.strip():
+            target_layers = {
+                int(x.strip()) for x in cfg.importance_target_layers.split(",") if x.strip()
+            }
+        else:
+            target_layers = None
+
+        use_importance_filter = cfg.importance_filter_enabled and (
+            target_layers is None or current_layer_idx in target_layers
+        )
+        if use_importance_filter:
+            update_indices = _apply_importance_filter(
+                hidden_states_ln1=hidden_states_ln1,
+                reference_hidden_states_ln1=getattr(self, "reference_hidden_states_ln1", None),
+                update_indices=update_indices,
+                importance_keep_ratio=cfg.importance_keep_ratio,
+            )
+            update_indices = torch.sort(update_indices, dim=1).values
     
         # ========== 阶段2：只为选定token计算Q和V ==========
         q_proj = self.self_attn.q_proj
@@ -671,4 +746,3 @@ def forward_with_selective_key_recompute_clip(
             outputs += (None,)  # 只计算了部分token的attention
         
         return outputs
-

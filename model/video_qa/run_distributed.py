@@ -162,6 +162,10 @@ def parse_args():
     # 缓存策略参数
     parser.add_argument("--cache_strategy", default="none")
     parser.add_argument("--update_token_ratio", type=float, default=0.3)
+    parser.add_argument("--cache_interval", type=int, default=2)
+    parser.add_argument("--importance_filter_enabled", action="store_true")
+    parser.add_argument("--importance_keep_ratio", type=float, default=0.5)
+    parser.add_argument("--importance_target_layers", type=str, default="")
     parser.add_argument("--token_per_frame", type=int, default=196)
     parser.add_argument("--prune_strategy", default="full_tokens")
     

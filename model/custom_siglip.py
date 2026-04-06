@@ -17,9 +17,76 @@ from logzero import logger  # 添加这行
 from model.config import get_config
 import types
 import torch.distributed as dist
+import json
 
 
 
+
+_METRICS_DUMP_COUNT = 0
+_METRICS_DUMP_PATH = None
+
+
+def _record_cache_metrics(
+    layer_idx: int,
+    chunk_idx: int,
+    similarity: torch.Tensor,
+    update_indices: torch.Tensor,
+    importance_scores: Optional[torch.Tensor],
+    num_update_before_importance: int,
+    num_update_after_importance: int,
+) -> None:
+    global _METRICS_DUMP_COUNT, _METRICS_DUMP_PATH
+
+    cfg = get_config().cache
+    if not cfg.metrics_dump_enabled:
+        return
+    if _METRICS_DUMP_COUNT >= cfg.metrics_dump_max_records:
+        return
+    if dist.is_available() and dist.is_initialized() and dist.get_rank() != 0:
+        return
+
+    if _METRICS_DUMP_PATH is None:
+        rank_suffix = ""
+        if dist.is_available() and dist.is_initialized():
+            rank_suffix = f"_rank{dist.get_rank()}"
+        output_path = cfg.metrics_dump_path or f"./cache_token_metrics{rank_suffix}.jsonl"
+        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+        _METRICS_DUMP_PATH = output_path
+        with open(_METRICS_DUMP_PATH, "w", encoding="utf-8"):
+            pass
+
+    similarity_cpu = similarity.detach().float().cpu()
+    update_indices_cpu = update_indices.detach().cpu()
+    importance_cpu = None if importance_scores is None else importance_scores.detach().float().cpu()
+
+    seq_len = similarity_cpu.shape[1]
+    for frame_idx in range(similarity_cpu.shape[0]):
+        if _METRICS_DUMP_COUNT >= cfg.metrics_dump_max_records:
+            break
+
+        importance_dense = [None] * seq_len
+        if importance_cpu is not None:
+            frame_indices = update_indices_cpu[frame_idx].tolist()
+            frame_scores = importance_cpu[frame_idx].tolist()
+            for token_idx, score in zip(frame_indices, frame_scores):
+                importance_dense[token_idx] = float(score)
+
+        record = {
+            "chunk_idx": int(chunk_idx),
+            "layer_idx": int(layer_idx),
+            "frame_idx": int(frame_idx),
+            "num_tokens": int(seq_len),
+            "similarity": similarity_cpu[frame_idx].tolist(),
+            "importance": importance_dense,
+            "update_keep_ratio_before_importance": float(num_update_before_importance / seq_len),
+            "update_prune_ratio_before_importance": float(1.0 - num_update_before_importance / seq_len),
+            "update_keep_ratio_after_importance": float(num_update_after_importance / seq_len),
+            "update_prune_ratio_after_importance": float(1.0 - num_update_after_importance / seq_len),
+            "importance_computed_token_count": int(0 if importance_cpu is None else importance_cpu.shape[1]),
+        }
+        with open(_METRICS_DUMP_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        _METRICS_DUMP_COUNT += 1
 
 
 def register_cache_by_key_Siglip(vision_tower: nn.Module) -> None:
@@ -43,18 +110,18 @@ def _apply_importance_filter(
     reference_hidden_states_ln1: torch.Tensor,
     update_indices: torch.Tensor,
     importance_keep_ratio: float,
-) -> torch.Tensor:
+) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
     """
     在已选中的低相似度 token 内，按层间变化（L2）保留更重要的 token。
     """
     if reference_hidden_states_ln1 is None:
-        return update_indices
+        return update_indices, None
 
     batch_size, _, embed_dim = hidden_states_ln1.shape
     num_update = update_indices.shape[1]
 
     if num_update <= 1:
-        return update_indices
+        return update_indices, None
 
     update_idx_expanded = update_indices.unsqueeze(-1).expand(-1, -1, embed_dim)
     current_selected = hidden_states_ln1.gather(1, update_idx_expanded)
@@ -66,7 +133,7 @@ def _apply_importance_filter(
     keep_k = max(1, min(num_update, int(num_update * importance_keep_ratio)))
     topk_local = torch.topk(importance_scores, k=keep_k, dim=1, largest=True).indices
     final_indices = update_indices.gather(1, topk_local)
-    return final_indices
+    return final_indices, importance_scores
         
 def forward_with_selective_key_recompute(
     self,
@@ -188,8 +255,10 @@ def forward_with_selective_key_recompute(
         use_importance_filter = cfg.importance_filter_enabled and (
             target_layers is None or current_layer_idx in target_layers
         )
+        importance_scores = None
+        num_update_before_importance = num_update
         if use_importance_filter:
-            update_indices = _apply_importance_filter(
+            update_indices, importance_scores = _apply_importance_filter(
                 hidden_states_ln1=hidden_states_ln1,
                 reference_hidden_states_ln1=getattr(self, "reference_hidden_states_ln1", None),
                 update_indices=update_indices,
@@ -198,6 +267,15 @@ def forward_with_selective_key_recompute(
             update_indices = torch.sort(update_indices, dim=1).values
             # 重要性筛选后，实际更新 token 数会变化；后续 reshape/scatter 必须使用最新长度
             num_update = update_indices.shape[1]
+        _record_cache_metrics(
+            layer_idx=current_layer_idx,
+            chunk_idx=chunk_idx,
+            similarity=similarity,
+            update_indices=update_indices,
+            importance_scores=importance_scores,
+            num_update_before_importance=num_update_before_importance,
+            num_update_after_importance=num_update,
+        )
 
     # ========== 阶段2：只为选定token计算Q和V ==========
         q_proj = self.self_attn.q_proj
@@ -664,14 +742,26 @@ def forward_with_selective_key_recompute_clip(
         use_importance_filter = cfg.importance_filter_enabled and (
             target_layers is None or current_layer_idx in target_layers
         )
+        importance_scores = None
+        num_update_before_importance = num_update
         if use_importance_filter:
-            update_indices = _apply_importance_filter(
+            update_indices, importance_scores = _apply_importance_filter(
                 hidden_states_ln1=hidden_states_ln1,
                 reference_hidden_states_ln1=getattr(self, "reference_hidden_states_ln1", None),
                 update_indices=update_indices,
                 importance_keep_ratio=cfg.importance_keep_ratio,
             )
             update_indices = torch.sort(update_indices, dim=1).values
+            num_update = update_indices.shape[1]
+        _record_cache_metrics(
+            layer_idx=current_layer_idx,
+            chunk_idx=chunk_idx,
+            similarity=similarity,
+            update_indices=update_indices,
+            importance_scores=importance_scores,
+            num_update_before_importance=num_update_before_importance,
+            num_update_after_importance=num_update,
+        )
     
         # ========== 阶段2：只为选定token计算Q和V ==========
         q_proj = self.self_attn.q_proj

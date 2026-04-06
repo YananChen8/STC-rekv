@@ -14,6 +14,9 @@ class CacheConfig:
     importance_filter_enabled: bool = True
     importance_keep_ratio: float = 0.5
     importance_target_layers: str = "3,17,22"
+    metrics_dump_enabled: bool = False
+    metrics_dump_path: str = ""
+    metrics_dump_max_records: int = 500
     
 
         
@@ -58,6 +61,12 @@ class GlobalConfig:
             instance.cache.importance_keep_ratio = args.importance_keep_ratio
         if hasattr(args, "importance_target_layers"):
             instance.cache.importance_target_layers = args.importance_target_layers
+        if hasattr(args, "metrics_dump_enabled"):
+            instance.cache.metrics_dump_enabled = args.metrics_dump_enabled
+        if hasattr(args, "metrics_dump_path"):
+            instance.cache.metrics_dump_path = args.metrics_dump_path
+        if hasattr(args, "metrics_dump_max_records"):
+            instance.cache.metrics_dump_max_records = args.metrics_dump_max_records
         if hasattr(args, "token_per_frame"):
             instance.model.token_per_frame = args.token_per_frame
         if hasattr(args, "prune_strategy"):
@@ -76,6 +85,9 @@ class GlobalConfig:
                 'importance_filter_enabled': self.cache.importance_filter_enabled,
                 'importance_keep_ratio': self.cache.importance_keep_ratio,
                 'importance_target_layers': self.cache.importance_target_layers,
+                'metrics_dump_enabled': self.cache.metrics_dump_enabled,
+                'metrics_dump_path': self.cache.metrics_dump_path,
+                'metrics_dump_max_records': self.cache.metrics_dump_max_records,
             },
             'model': {
                 'token_per_frame': self.model.token_per_frame,

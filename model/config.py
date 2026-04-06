@@ -8,12 +8,12 @@ import os
 @dataclass
 class CacheConfig:
     """缓存相关配置"""
-    strategy: Literal['none', 'cacher'] = 'none'
+    strategy: Literal['none', 'cacher'] = 'cacher'
     update_token_ratio: float = 0.25
     cache_interval=2
-    importance_filter_enabled: bool = False
+    importance_filter_enabled: bool = True
     importance_keep_ratio: float = 0.5
-    importance_target_layers: str = ""
+    importance_target_layers: str = "3,17,22"
     
 
         

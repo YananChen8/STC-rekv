@@ -13,8 +13,8 @@ RESULT_DIR="results/${TIMESTAMP}/"
 MODE="online"
 
 # export CUDA_VISIBLE_DEVICES="4,5,6,7"
-NUM_GPUS=4              #
-TOTAL_PROCESSES=8
+NUM_GPUS=2              #
+TOTAL_PROCESSES=4
 
 RETRIEVE_SIZE=64
 

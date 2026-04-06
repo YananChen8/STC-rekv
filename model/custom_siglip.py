@@ -196,6 +196,8 @@ def forward_with_selective_key_recompute(
                 importance_keep_ratio=cfg.importance_keep_ratio,
             )
             update_indices = torch.sort(update_indices, dim=1).values
+            # 重要性筛选后，实际更新 token 数会变化；后续 reshape/scatter 必须使用最新长度
+            num_update = update_indices.shape[1]
 
     # ========== 阶段2：只为选定token计算Q和V ==========
         q_proj = self.self_attn.q_proj

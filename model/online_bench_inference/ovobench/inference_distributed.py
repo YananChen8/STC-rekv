@@ -123,6 +123,10 @@ def main():
     if rank == 0:
         save_merged_results(all_results, args)
     
+    # if dist.get_rank() == 0:  # 只在 rank 0 画一次
+    #     from model.plot_siglip_similarity import plot_siglip_similarity
+    #     plot_siglip_similarity(out_dir="siglip_similarity_plots")
+    
     dist.destroy_process_group()
 
 

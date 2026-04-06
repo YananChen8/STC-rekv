@@ -8,7 +8,7 @@ import os
 @dataclass
 class CacheConfig:
     """缓存相关配置"""
-    strategy: Literal['none', 'cacher'] = 'cacher'
+    strategy: Literal['none', 'cacher'] = 'none'
     update_token_ratio: float = 0.25
     cache_interval=2
     

@@ -31,8 +31,12 @@ class Evalrekv(ReKVOfflineVQA,OVOBenchOffline):
         self.total_cuda_time =0
         self.max_mem=0
         ##################################
+        
     def _model_init(self):
-        self.qa_model, self.processor = load_model()
+        base = getattr(self.args, 'model_path', None) or '/mnt/users/chenyanan-20260210/models'
+        subdir = os.path.join(base, 'llava-onevision-qwen2-7b-ov-hf')
+        model_path = subdir if os.path.isdir(subdir) else base
+        self.qa_model, self.processor = load_model(model_path=model_path)
 
 
 
@@ -49,10 +53,18 @@ class Evalrekv(ReKVOfflineVQA,OVOBenchOffline):
 
         self.qa_model.encode_video(video_tensor)
 
-        response=self.qa_model.question_answering(inp)
+        response = self.qa_model.question_answering(inp)
         response_lines = response.strip().splitlines()
         final_answer = response_lines[-1] if response_lines else ""
-        print("model_final_answer:",final_answer)
-        
+        print("model_final_answer:", final_answer)
+
+        if self.qa_model.total_vit_frames > 0:
+            print(
+                f"[ViT Summary] total_vit_time: {self.qa_model.total_vit_time_ms:.2f} ms | "
+                f"total_frames: {self.qa_model.total_vit_frames} | "
+                f"avg_per_frame: {self.qa_model.total_vit_time_ms / self.qa_model.total_vit_frames:.4f} ms | "
+                f"avg_per_call: {self.qa_model.total_vit_time_ms / self.qa_model.num_vit_calls:.4f} ms"
+            )
+
         return final_answer
 

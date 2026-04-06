@@ -74,62 +74,53 @@ class OVOBenchOfflineScore():
         backward_results = self.results["backward"]
         realtime_results = self.results["realtime"]
         forward_results = self.results["forward"]
+
         avg_scores = {
             "backward": [],
             "realtime": [],
             "forward": []
         }
 
+        # 默认值，防止某一部分没有结果时变量未初始化
+        backward_score = 0.0
+        realtime_score = 0.0
+        forward_score = 0.0
+        num_parts = 0
+
         if len(backward_results) > 0:
             print("Evaluate Backward Tracing...")
             backward_results, backward_scores = self.calculate_score_backward_realtime(backward_results)
-            # correct_backward, total_backward = 0, 0
             for k, v in backward_scores.items():
-                print(f"Task: {k}, Acc: {100 * sum(v)/len(v):.2f}")
-                # correct_backward += sum(v)
-                # total_backward += len(v)
-                avg_scores["backward"].append(sum(v)/len(v))
-            # print(f"Backward Avg.: {100 * correct_backward / total_backward:.2f}\n")
-            backward_score = 100 * sum(avg_scores['backward'])/len(avg_scores['backward'])
-            print(f"Backward Avg.: {100 * sum(avg_scores['backward'])/len(avg_scores['backward']):.2f}\n")
-        else:
-            # correct_backward = 0
-            # total_backward = 0
-            pass
-            
+                print(f"Task: {k}, Acc: {100 * sum(v) / len(v):.2f}")
+                avg_scores["backward"].append(sum(v) / len(v))
+            if len(avg_scores["backward"]) > 0:
+                backward_score = 100 * sum(avg_scores["backward"]) / len(avg_scores["backward"])
+                num_parts += 1
+            print(f"Backward Avg.: {backward_score:.2f}\n")
+
         if len(realtime_results) > 0:
             print("Evaluate Real-time Visual Perception...")
             realtime_results, realtime_scores = self.calculate_score_backward_realtime(realtime_results)
-            # correct_realtime, total_realtime = 0, 0
             for k, v in realtime_scores.items():
-                print(f"Task: {k}, Acc: {100 * sum(v)/len(v):.2f}")
-                # correct_realtime += sum(v)
-                # total_realtime += len(v)
-                avg_scores["realtime"].append(sum(v)/len(v))
-            # print(f"Realtime Avg.: {100 * correct_realtime / total_realtime:.2f}\n")
-                realtime_score = 100 * sum(avg_scores['realtime'])/len(avg_scores['realtime'])
-            print(f"Realtime Avg.: {100 * sum(avg_scores['realtime'])/len(avg_scores['realtime']):.2f}\n")
-        else:
-            # correct_realtime = 0
-            # total_realtime = 0
-            pass
+                print(f"Task: {k}, Acc: {100 * sum(v) / len(v):.2f}")
+                avg_scores["realtime"].append(sum(v) / len(v))
+            if len(avg_scores["realtime"]) > 0:
+                realtime_score = 100 * sum(avg_scores["realtime"]) / len(avg_scores["realtime"])
+                num_parts += 1
+            print(f"Realtime Avg.: {realtime_score:.2f}\n")
 
         if len(forward_results) > 0:
             print("Evaluate Forward Active Responding...")
             forward_results, forward_scores = self.calculate_score_forward(forward_results)
-            # correct_forward, total_forward = 0, 0
             for k, v in forward_scores.items():
-                print(f"Task: {k}, Acc: {100 * sum(v)/len(v):.2f}")
-                # correct_forward += sum(v)
-                # total_forward += len(v)
-                avg_scores["forward"].append(sum(v)/len(v))
-            # print(f"Forward Avg.: {100 * correct_forward / total_forward:.2f}\n")
-                forward_score = 100 * sum(avg_scores['forward'])/len(avg_scores['forward'])
-            print(f"Forward Avg.: {100 * sum(avg_scores['forward'])/len(avg_scores['forward']):.2f}\n")
-        else:
-            # correct_forward = 0
-            # total_forward = 0
-            pass
+                print(f"Task: {k}, Acc: {100 * sum(v) / len(v):.2f}")
+                avg_scores["forward"].append(sum(v) / len(v))
+            if len(avg_scores["forward"]) > 0:
+                forward_score = 100 * sum(avg_scores["forward"]) / len(avg_scores["forward"])
+                num_parts += 1
+            print(f"Forward Avg.: {forward_score:.2f}\n")
 
-        print(f"Total Avg.: {(backward_score + realtime_score + forward_score) / 3:.2f}")
+        if num_parts > 0:
+            total_avg = (backward_score + realtime_score + forward_score) / num_parts
+            print(f"Total Avg.: {total_avg:.2f}")
 

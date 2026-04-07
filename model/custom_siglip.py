@@ -107,14 +107,14 @@ def register_cache_by_key_CLIP(vision_tower: nn.Module) -> None:
 
 def _apply_importance_filter(
     hidden_states_ln1: torch.Tensor,
-    reference_hidden_states_ln1: torch.Tensor,
+    prev_layer_hidden_states: Optional[torch.Tensor],
     update_indices: torch.Tensor,
     importance_keep_ratio: float,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
     """
     在已选中的低相似度 token 内，按层间变化（L2）保留更重要的 token。
     """
-    if reference_hidden_states_ln1 is None:
+    if prev_layer_hidden_states is None:
         return update_indices, None
 
     batch_size, _, embed_dim = hidden_states_ln1.shape
@@ -126,10 +126,9 @@ def _apply_importance_filter(
     update_idx_expanded = update_indices.unsqueeze(-1).expand(-1, -1, embed_dim)
     current_selected = hidden_states_ln1.gather(1, update_idx_expanded)
 
-    reference_hidden_states_ln1 = reference_hidden_states_ln1.unsqueeze(0).expand(batch_size, -1, -1)
-    reference_selected = reference_hidden_states_ln1.gather(1, update_idx_expanded)
+    prev_selected = prev_layer_hidden_states.gather(1, update_idx_expanded)
 
-    importance_scores = torch.norm(current_selected - reference_selected, p=2, dim=-1)
+    importance_scores = torch.norm(current_selected - prev_selected, p=2, dim=-1)
     keep_k = max(1, min(num_update, int(num_update * importance_keep_ratio)))
     topk_local = torch.topk(importance_scores, k=keep_k, dim=1, largest=True).indices
     final_indices = update_indices.gather(1, topk_local)
@@ -260,7 +259,7 @@ def forward_with_selective_key_recompute(
         if use_importance_filter:
             update_indices, importance_scores = _apply_importance_filter(
                 hidden_states_ln1=hidden_states_ln1,
-                reference_hidden_states_ln1=getattr(self, "reference_hidden_states_ln1", None),
+                prev_layer_hidden_states=hidden_states,
                 update_indices=update_indices,
                 importance_keep_ratio=cfg.importance_keep_ratio,
             )
@@ -747,7 +746,7 @@ def forward_with_selective_key_recompute_clip(
         if use_importance_filter:
             update_indices, importance_scores = _apply_importance_filter(
                 hidden_states_ln1=hidden_states_ln1,
-                reference_hidden_states_ln1=getattr(self, "reference_hidden_states_ln1", None),
+                prev_layer_hidden_states=hidden_states,
                 update_indices=update_indices,
                 importance_keep_ratio=cfg.importance_keep_ratio,
             )

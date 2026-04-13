@@ -1,6 +1,7 @@
 import torch
 from transformers import LlavaOnevisionProcessor, LlavaOnevisionForConditionalGeneration
 from logzero import logger
+import time
 
 from model.patch import patch_hf
 from model.abstract_rekv import Abstract_ReKV
@@ -8,6 +9,9 @@ from model.config import get_config
 from model.prune import *
 from model.custom_siglip import *
 import torch.distributed as dist
+
+def _is_main_process():
+    return (not dist.is_available()) or (not dist.is_initialized()) or dist.get_rank() == 0
 
 
 class LlavaOneVision_ReKV(LlavaOnevisionForConditionalGeneration, Abstract_ReKV):
@@ -29,6 +33,9 @@ class LlavaOneVision_ReKV(LlavaOnevisionForConditionalGeneration, Abstract_ReKV)
         self.total_vit_time_ms = 0.0
         self.total_vit_frames = 0
         self.num_vit_calls = 0
+        self.current_video_vit_time_ms = 0.0
+        self.total_llm_time_ms = 0.0
+        self.num_llm_calls = 0
         
     def get_vision_tower(self):
         return self.vision_tower
@@ -38,6 +45,10 @@ class LlavaOneVision_ReKV(LlavaOnevisionForConditionalGeneration, Abstract_ReKV)
         if mc:
             prompt += 'Best option: ('
         return prompt
+
+    def encode_video(self, video):
+        self.current_video_vit_time_ms = 0.0
+        return super().encode_video(video)
 
         
         
@@ -57,11 +68,11 @@ class LlavaOneVision_ReKV(LlavaOnevisionForConditionalGeneration, Abstract_ReKV)
         vit_time_ms = starter.elapsed_time(ender)
 
         self.total_vit_time_ms += vit_time_ms
+        self.current_video_vit_time_ms += vit_time_ms
         self.total_vit_frames += frames
         self.num_vit_calls += 1
 
-        rank = dist.get_rank()
-        if rank == 0:
+        if _is_main_process():
             logger.info(
                 f"ViT encode: {vit_time_ms:.2f} ms | "
                 f"frames: {frames} | "
@@ -82,9 +93,7 @@ class LlavaOneVision_ReKV(LlavaOnevisionForConditionalGeneration, Abstract_ReKV)
         ###############################################
         token_per_frame = get_config().model.token_per_frame
         video_features = self.stc_pruner.compress(reshaped_video_tensor)
-        rank = dist.get_rank()
-        if rank == 0:
-        
+        if _is_main_process():
             logger.info(f"LLM | Vocab size: 196, Tokens to retained: {token_per_frame}")
         
         #############################################
@@ -96,6 +105,13 @@ class LlavaOneVision_ReKV(LlavaOnevisionForConditionalGeneration, Abstract_ReKV)
 
     @torch.inference_mode()
     def question_answering(self, input_text, max_new_tokens=128, retrieved_indices=None):
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            llm_starter = torch.cuda.Event(enable_timing=True)
+            llm_ender = torch.cuda.Event(enable_timing=True)
+            llm_starter.record()
+        else:
+            llm_start_time = time.perf_counter()
         
         device = self.device
         stop_token_ids = [self.processor.tokenizer.eos_token_id]
@@ -174,6 +190,23 @@ class LlavaOneVision_ReKV(LlavaOnevisionForConditionalGeneration, Abstract_ReKV)
             spaces_between_special_tokens=False,
             clean_up_tokenization_spaces=True,
         )
+        if torch.cuda.is_available():
+            llm_ender.record()
+            torch.cuda.synchronize()
+            llm_time_ms = llm_starter.elapsed_time(llm_ender)
+        else:
+            llm_time_ms = (time.perf_counter() - llm_start_time) * 1000.0
+
+        self.total_llm_time_ms += llm_time_ms
+        self.num_llm_calls += 1
+        e2e_latency_ms = self.current_video_vit_time_ms + llm_time_ms
+
+        if _is_main_process():
+            logger.info(
+                f"LLM decode: {llm_time_ms:.2f} ms | "
+                f"ViT+LLM end-to-end: {e2e_latency_ms:.2f} ms "
+                f"(ViT: {self.current_video_vit_time_ms:.2f} ms, LLM: {llm_time_ms:.2f} ms)"
+            )
         
         return output
 
@@ -216,8 +249,7 @@ def load_model(model_path='llava-hf/llava-onevision-qwen2-7b-ov-hf',device=None,
     model.language_model = patch_hf(model.language_model, **inf_llm_config)
     
     ######################################################################
-    rank = dist.get_rank()
-    if rank == 0:
+    if _is_main_process():
         for k, v in inf_llm_config.items():
             logger.info(f'{k}: {v}')
         logger.info(f'n_frame_tokens: {n_frame_tokens}')

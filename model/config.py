@@ -14,8 +14,8 @@ class CacheConfig:
     importance_filter_enabled: bool = True
     importance_keep_ratio: float = 0.5
     importance_target_layers: str = "3,17,22"
-    metrics_dump_enabled: bool = False
-    metrics_dump_path: str = ""
+    metrics_dump_enabled: bool = True
+    metrics_dump_path: str = "/mnt/users/chenyanan-20260210/STC/results/ovo-bench/cache_metrics.csv"
     metrics_dump_max_records: int = 500
     
 

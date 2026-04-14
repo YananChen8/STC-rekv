@@ -29,7 +29,7 @@ _METRICS_DUMP_PATH = None
 def _record_cache_metrics(
     layer_idx: int,
     chunk_idx: int,
-    similarity: torch.Tensor,
+    similarity: Optional[torch.Tensor],
     update_indices: torch.Tensor,
     importance_scores: Optional[torch.Tensor],
     num_update_before_importance: int,
@@ -54,6 +54,9 @@ def _record_cache_metrics(
         _METRICS_DUMP_PATH = output_path
         with open(_METRICS_DUMP_PATH, "w", encoding="utf-8"):
             pass
+
+    if similarity is None:
+        return
 
     similarity_cpu = similarity.detach().float().cpu()
     update_indices_cpu = update_indices.detach().cpu()
@@ -224,26 +227,40 @@ def forward_with_selective_key_recompute(
         num_heads = self.self_attn.num_heads
         head_dim = embed_dim // num_heads
         
-        # ========== 阶段1：基于Key识别需要更新的token ==========
-        # 计算当前帧的Key向量（用于相似度计算）
-        key_states_full = self.self_attn.k_proj(hidden_states_ln1)  # [F, T, C]
-        
-        # Reference frame的Key
-        ref_key_for_sim = self.reference_frame_key  # [T, C]
-        # 计算cosine相似度：[F, T, C] vs [T, C] -> [F, T]
-        similarity = torch.nn.functional.cosine_similarity(
-            key_states_full,
-            ref_key_for_sim.unsqueeze(0),
-            dim=-1
-        )
-
-        num_update = int(seq_len * update_token_ratio)
-        num_update = max(1, min(num_update, seq_len))
-        
-        # 对每一帧，选择相似度最低的token索引
-        update_indices = torch.topk(similarity, k=num_update, dim=1, largest=False).indices  # [F, num_update]
         cfg = get_config().cache
         current_layer_idx = getattr(self, "_stc_layer_idx", -1)
+        shallow_reuse_enabled = cfg.shallow_layer_reuse_enabled and cfg.shallow_layer_count > 0
+        use_reused_indices = (
+            shallow_reuse_enabled
+            and current_layer_idx >= cfg.shallow_layer_count
+            and getattr(cache2, "shared_update_indices_chunk", -1) == chunk_idx
+            and getattr(cache2, "shared_update_indices", None) is not None
+        )
+
+        similarity = None
+        if use_reused_indices:
+            update_indices = cache2.shared_update_indices
+            num_update = update_indices.shape[1]
+        else:
+            # ========== 阶段1：基于Key识别需要更新的token ==========
+            # 计算当前帧的Key向量（用于相似度计算）
+            key_states_full = self.self_attn.k_proj(hidden_states_ln1)  # [F, T, C]
+            
+            # Reference frame的Key
+            ref_key_for_sim = self.reference_frame_key  # [T, C]
+            # 计算cosine相似度：[F, T, C] vs [T, C] -> [F, T]
+            similarity = torch.nn.functional.cosine_similarity(
+                key_states_full,
+                ref_key_for_sim.unsqueeze(0),
+                dim=-1
+            )
+
+            num_update = int(seq_len * update_token_ratio)
+            num_update = max(1, min(num_update, seq_len))
+            
+            # 对每一帧，选择相似度最低的token索引
+            update_indices = torch.topk(similarity, k=num_update, dim=1, largest=False).indices  # [F, num_update]
+
         if cfg.importance_target_layers.strip():
             target_layers = {
                 int(x.strip()) for x in cfg.importance_target_layers.split(",") if x.strip()
@@ -251,7 +268,7 @@ def forward_with_selective_key_recompute(
         else:
             target_layers = None
 
-        use_importance_filter = cfg.importance_filter_enabled and (
+        use_importance_filter = (not use_reused_indices) and cfg.importance_filter_enabled and (
             target_layers is None or current_layer_idx in target_layers
         )
         importance_scores = None
@@ -275,6 +292,12 @@ def forward_with_selective_key_recompute(
             num_update_before_importance=num_update_before_importance,
             num_update_after_importance=num_update,
         )
+        if (
+            shallow_reuse_enabled
+            and current_layer_idx == cfg.shallow_layer_count - 1
+        ):
+            cache2.shared_update_indices = update_indices.detach()
+            cache2.shared_update_indices_chunk = chunk_idx
 
     # ========== 阶段2：只为选定token计算Q和V ==========
         q_proj = self.self_attn.q_proj

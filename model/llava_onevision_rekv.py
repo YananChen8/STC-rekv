@@ -29,13 +29,7 @@ class LlavaOneVision_ReKV(LlavaOnevisionForConditionalGeneration, Abstract_ReKV)
         self.stc_pruner.past_memory_mean_token =[]
         self.past_memory_mean_token = self.stc_pruner.past_memory_mean_token
         ###############################################
-        # ===== 新增：encoder timing统计 =====
-        self.total_vit_time_ms = 0.0
-        self.total_vit_frames = 0
-        self.num_vit_calls = 0
         self.current_video_vit_time_ms = 0.0
-        self.total_llm_time_ms = 0.0
-        self.num_llm_calls = 0
         
     def get_vision_tower(self):
         return self.vision_tower
@@ -47,8 +41,10 @@ class LlavaOneVision_ReKV(LlavaOnevisionForConditionalGeneration, Abstract_ReKV)
         return prompt
 
     def encode_video(self, video):
-        self.current_video_vit_time_ms = 0.0
-        return super().encode_video(video)
+        vit_start_time = time.perf_counter()
+        out = super().encode_video(video)
+        self.current_video_vit_time_ms = (time.perf_counter() - vit_start_time) * 1000.0
+        return out
 
         
         
@@ -56,28 +52,7 @@ class LlavaOneVision_ReKV(LlavaOnevisionForConditionalGeneration, Abstract_ReKV)
         batch_size, frames, channels, height, width = pixel_values_videos.shape
         pixel_values_videos = pixel_values_videos.view(batch_size * frames, channels, height, width)
 
-        torch.cuda.synchronize()
-        starter = torch.cuda.Event(enable_timing=True)
-        ender = torch.cuda.Event(enable_timing=True)
-
-        starter.record()
         video_features = self.vision_tower(pixel_values_videos, output_hidden_states=True)
-        ender.record()
-
-        torch.cuda.synchronize()
-        vit_time_ms = starter.elapsed_time(ender)
-
-        self.total_vit_time_ms += vit_time_ms
-        self.current_video_vit_time_ms += vit_time_ms
-        self.total_vit_frames += frames
-        self.num_vit_calls += 1
-
-        if _is_main_process():
-            logger.info(
-                f"ViT encode: {vit_time_ms:.2f} ms | "
-                f"frames: {frames} | "
-                f"avg/frame: {vit_time_ms / frames:.4f} ms"
-            )
 
         selected_video_feature = video_features.hidden_states[self.config.vision_feature_layer]
         frames=selected_video_feature.shape[0]
@@ -197,8 +172,6 @@ class LlavaOneVision_ReKV(LlavaOnevisionForConditionalGeneration, Abstract_ReKV)
         else:
             llm_time_ms = (time.perf_counter() - llm_start_time) * 1000.0
 
-        self.total_llm_time_ms += llm_time_ms
-        self.num_llm_calls += 1
         e2e_latency_ms = self.current_video_vit_time_ms + llm_time_ms
 
         if _is_main_process():

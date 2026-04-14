@@ -17,8 +17,8 @@ class CacheConfig:
     metrics_dump_enabled: bool = False
     metrics_dump_path: str = "/mnt/users/chenyanan-20260210/STC/results/ovo-bench/cache_metrics.csv"
     metrics_dump_max_records: int = 500
-    shallow_layer_reuse_enabled: bool = False
-    shallow_layer_count: int = 0
+    shallow_layer_reuse_enabled: bool = True
+    shallow_layer_count: int = 6
     
 
         

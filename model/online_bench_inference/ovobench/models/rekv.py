@@ -58,4 +58,12 @@ class Evalrekv(ReKVOfflineVQA,OVOBenchOffline):
         final_answer = response_lines[-1] if response_lines else ""
         print("model_final_answer:", final_answer)
 
+        # if self.qa_model.total_vit_frames > 0:
+        #     print(
+        #         f"[ViT Summary] total_vit_time: {self.qa_model.total_vit_time_ms:.2f} ms | "
+        #         f"total_frames: {self.qa_model.total_vit_frames} | "
+        #         f"avg_per_frame: {self.qa_model.total_vit_time_ms / self.qa_model.total_vit_frames:.4f} ms | "
+        #         f"avg_per_call: {self.qa_model.total_vit_time_ms / self.qa_model.num_vit_calls:.4f} ms"
+        #     )
+
         return final_answer

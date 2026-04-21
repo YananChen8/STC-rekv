@@ -169,6 +169,8 @@ def parse_args():
     parser.add_argument("--metrics_dump_enabled", action="store_true")
     parser.add_argument("--metrics_dump_path", type=str, default="")
     parser.add_argument("--metrics_dump_max_records", type=int, default=500)
+    parser.add_argument("--shallow_similarity_mode", type=str, default="last",
+                        choices=["last", "average", "weighted"])
     parser.add_argument("--token_per_frame", type=int, default=196)
     parser.add_argument("--prune_strategy", default="full_tokens")
     

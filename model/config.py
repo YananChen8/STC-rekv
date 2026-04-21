@@ -19,6 +19,7 @@ class CacheConfig:
     metrics_dump_max_records: int = 500
     shallow_layer_reuse_enabled: bool = True
     shallow_layer_count: int = 6
+    shallow_similarity_mode: Literal['last', 'average', 'weighted'] = 'last'
     
 
         
@@ -73,6 +74,8 @@ class GlobalConfig:
             instance.cache.shallow_layer_reuse_enabled = args.shallow_layer_reuse_enabled
         if hasattr(args, "shallow_layer_count"):
             instance.cache.shallow_layer_count = args.shallow_layer_count
+        if hasattr(args, "shallow_similarity_mode"):
+            instance.cache.shallow_similarity_mode = args.shallow_similarity_mode
         if hasattr(args, "token_per_frame"):
             instance.model.token_per_frame = args.token_per_frame
         if hasattr(args, "prune_strategy"):
@@ -96,6 +99,7 @@ class GlobalConfig:
                 'metrics_dump_max_records': self.cache.metrics_dump_max_records,
                 'shallow_layer_reuse_enabled': self.cache.shallow_layer_reuse_enabled,
                 'shallow_layer_count': self.cache.shallow_layer_count,
+                'shallow_similarity_mode': self.cache.shallow_similarity_mode,
             },
             'model': {
                 'token_per_frame': self.model.token_per_frame,

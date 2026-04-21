@@ -92,6 +92,55 @@ def _record_cache_metrics(
         _METRICS_DUMP_COUNT += 1
 
 
+def _compute_shallow_similarity_score(
+    cache_obj: STC_CACHE,
+    chunk_idx: int,
+    similarity: torch.Tensor,
+    mode: str,
+    shallow_layer_count: int,
+) -> torch.Tensor:
+    """
+    统一浅层相似度聚合策略：
+    - last: 使用当前层相似度
+    - average: 使用浅层相似度逐层平均
+    - weighted: 使用随层线性增权的均值减去方差（稳定性惩罚）
+    """
+    mode = (mode or "last").lower()
+    if mode == "last":
+        return similarity
+
+    history_chunk = getattr(cache_obj, "shared_similarity_history_chunk", -1)
+    if history_chunk != chunk_idx:
+        cache_obj.shared_similarity_history = []
+        cache_obj.shared_similarity_history_chunk = chunk_idx
+
+    history = getattr(cache_obj, "shared_similarity_history", [])
+    history.append(similarity.detach())
+    max_keep = max(1, int(shallow_layer_count))
+    cache_obj.shared_similarity_history = history[-max_keep:]
+
+    stacked = torch.stack(cache_obj.shared_similarity_history, dim=0)  # [L, F, T]
+    if mode == "average":
+        return stacked.mean(dim=0)
+
+    if mode == "weighted":
+        layer_count = stacked.shape[0]
+        layer_weights = torch.linspace(
+            1.0,
+            float(layer_count),
+            steps=layer_count,
+            device=stacked.device,
+            dtype=stacked.dtype,
+        )
+        layer_weights = layer_weights / layer_weights.sum()
+        weighted_mean = (stacked * layer_weights.view(layer_count, 1, 1)).sum(dim=0)
+        stability_var = stacked.var(dim=0, unbiased=False)
+        return weighted_mean - stability_var
+
+    logger.warning(f"Unknown shallow_similarity_mode={mode}, fallback to 'last'.")
+    return similarity
+
+
 def register_cache_by_key_Siglip(vision_tower: nn.Module) -> None:
     for layer_idx, layer in enumerate(vision_tower.vision_model.encoder.layers):
         setattr(layer, "_old_forward", layer.forward)
@@ -257,9 +306,26 @@ def forward_with_selective_key_recompute(
 
             num_update = int(seq_len * update_token_ratio)
             num_update = max(1, min(num_update, seq_len))
-            
+            similarity_for_selection = similarity
+            if (
+                shallow_reuse_enabled
+                and current_layer_idx < cfg.shallow_layer_count
+                and cfg.shallow_similarity_mode != "last"
+            ):
+                shallow_score = _compute_shallow_similarity_score(
+                    cache_obj=cache2,
+                    chunk_idx=chunk_idx,
+                    similarity=similarity,
+                    mode=cfg.shallow_similarity_mode,
+                    shallow_layer_count=cfg.shallow_layer_count,
+                )
+                if current_layer_idx == cfg.shallow_layer_count - 1:
+                    similarity_for_selection = shallow_score
+
             # 对每一帧，选择相似度最低的token索引
-            update_indices = torch.topk(similarity, k=num_update, dim=1, largest=False).indices  # [F, num_update]
+            update_indices = torch.topk(
+                similarity_for_selection, k=num_update, dim=1, largest=False
+            ).indices  # [F, num_update]
 
         if cfg.importance_target_layers.strip():
             target_layers = {
